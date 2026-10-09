@@ -3,7 +3,8 @@ import { respondWithJSON } from "./json";
 import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
-import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+import { BadRequestError, UserForbiddenError } from "./errors";
+import path from "path";
 
 type Thumbnail = {
     data: ArrayBuffer;
@@ -35,22 +36,20 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
     }
 
     const mediaType = requestThumbnail.type;
+    const fileExtension = mediaType.split("/")[1];
+    const uniqueFilePath = path.join(cfg.assetsRoot, "assets", videoId) + "." + fileExtension;
+    Bun.write(uniqueFilePath, requestThumbnail);
 
-    const thumbnailData = await requestThumbnail.arrayBuffer();
-    const thumbnailBuffer = Buffer.from(thumbnailData);
-    const base64ThumbnailBufferString = thumbnailBuffer.toString("base64");
-    const dataUrl = `data:${mediaType};base64,${base64ThumbnailBufferString}`;
+    // const thumbnailData = await requestThumbnail.arrayBuffer();
+    // const thumbnailBuffer = Buffer.from(thumbnailData);
+    // const base64ThumbnailBufferString = thumbnailBuffer.toString("base64");
+    // const dataUrl = `data:${mediaType};base64,${base64ThumbnailBufferString}`;
     const video = getVideo(cfg.db, videoId);
     if (video?.userID !== userID) {
         throw new UserForbiddenError("Forbidden: Not the video owner");
     }
 
-    const thumbnail: Thumbnail = {
-        data: thumbnailData,
-        mediaType
-    }
-
-    video.thumbnailURL = dataUrl;
+    video.thumbnailURL = uniqueFilePath;
 
     updateVideo(cfg.db, video)
 
