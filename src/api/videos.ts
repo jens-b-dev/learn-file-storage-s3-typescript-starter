@@ -48,7 +48,8 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
     await Bun.write(tempFilePath, file);
 
-    let key = `${videoId}.mp4`;
+    const aspectRatio = await getVideoAspectRatio(tempFilePath);
+    const key = `${aspectRatio}/${videoId}.mp4`;
     await uploadVideoToS3(cfg, key, tempFilePath, "video/mp4");
 
     const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
@@ -58,4 +59,48 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     await Promise.all([rm(tempFilePath, { force: true })]);
 
     return respondWithJSON(200, null);
+}
+
+export async function getVideoAspectRatio(filePath: string) {
+    const proc = Bun.spawn(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            filePath,
+        ],
+        {
+            stderr: "pipe",
+            stdout: "pipe",
+        },
+    );
+
+    if ((await proc.exited) !== 0) {
+        const stderrText = await new Response(proc.stderr).text();
+
+        throw new BadRequestError(stderrText);
+    }
+
+    const stdoutParsed = JSON.parse(await new Response(proc.stdout).text());
+    const videoWidth = stdoutParsed.streams[0].width;
+    const videoHeight = stdoutParsed.streams[0].height;
+
+    const ratio = videoWidth / videoHeight;
+    const targetLandscape = 16 / 9;
+    const targetPortrait = 9 / 16;
+    const tolerance = 0.01;
+
+    if (Math.abs(ratio - targetLandscape) < tolerance) {
+        return "landscape";
+    } else if (Math.abs(ratio - targetPortrait) < tolerance) {
+        return "portrait";
+    } else {
+        return "other";
+    }
 }
