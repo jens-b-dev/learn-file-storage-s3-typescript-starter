@@ -9,6 +9,7 @@ import { getBearerToken, validateJWT } from "../auth";
 import { getVideo, updateVideo } from "../db/videos";
 import { getAssetDiskPath, mediaTypeToExt } from "./assets";
 import { uploadVideoToS3 } from "../s3";
+import { unlink } from "fs/promises";
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     const { videoId } = req.params as { videoId?: string };
@@ -49,14 +50,19 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     await Bun.write(tempFilePath, file);
 
     const aspectRatio = await getVideoAspectRatio(tempFilePath);
+    const fastTempFilePath = await processVideoForFastStart(tempFilePath);
+
     const key = `${aspectRatio}/${videoId}.mp4`;
-    await uploadVideoToS3(cfg, key, tempFilePath, "video/mp4");
+    await uploadVideoToS3(cfg, key, fastTempFilePath, "video/mp4");
 
     const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
     video.videoURL = videoURL;
     updateVideo(cfg.db, video);
 
-    await Promise.all([rm(tempFilePath, { force: true })]);
+    await Promise.all([
+        rm(tempFilePath, { force: true }),
+        rm(`${tempFilePath}.processed`, { force: true }),
+    ]);
 
     return respondWithJSON(200, null);
 }
@@ -103,4 +109,41 @@ export async function getVideoAspectRatio(filePath: string) {
     } else {
         return "other";
     }
+}
+
+export async function processVideoForFastStart(inputFilePath: string) {
+    const outputFilePath = inputFilePath + ".processed";
+
+    await unlink(outputFilePath);
+
+    const command = Bun.spawn(
+        [
+            "ffmpeg",
+            "-i",
+            inputFilePath,
+            "-movflags",
+            "faststart",
+            "-map_metadata",
+            "0",
+            "-codec",
+            "copy",
+            "-f",
+            "mp4",
+            outputFilePath,
+        ],
+        {
+            stderr: "pipe",
+        },
+    );
+
+    const errorText = await new Response(command.stderr).text();
+    const exitCode = await command.exited;
+
+    if (exitCode !== 0) {
+        await unlink(outputFilePath);
+
+        throw new Error(`FFmpeg error: ${errorText}`);
+    }
+
+    return outputFilePath;
 }
